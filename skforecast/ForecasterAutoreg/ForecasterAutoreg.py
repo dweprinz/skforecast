@@ -484,6 +484,131 @@ class ForecasterAutoreg(ForecasterBase):
             y_train = y_train.iloc[self.differentiation: ]
                         
         return X_train, y_train
+    
+    
+    def create_train_calib_X_y(
+        self,
+        y: pd.Series,
+        exog: Optional[Union[pd.Series, pd.DataFrame]] = None,
+        calib_size: float = 0.2
+        ) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+        """
+        Create training and calibration matrices from univariate time series and
+        optional exogenous variables.
+
+        Parameters
+        ----------
+        y : pandas Series
+            Training time series.
+        exog : pandas Series, pandas DataFrame, default `None`
+            Exogenous variable/s included as predictors. Must have the same
+            number of observations as `y` and their indexes must be aligned.
+        calib_size : float, default 0.2
+            Proportion of the dataset to reserve for calibration. This portion is taken from the end of the dataset.
+
+        Returns
+        -------
+        X_train : pandas DataFrame
+            Training values (predictors).
+        y_train : pandas Series
+            Training target values.
+        X_calib : pandas DataFrame
+            Calibration values (predictors).
+        y_calib : pandas Series
+            Calibration target values.
+        """
+        
+        check_y(y=y)
+        fit_transformer = False if self.fitted else True
+        y = transform_series(
+                series=y,
+                transformer=self.transformer_y,
+                fit=fit_transformer,
+                inverse_transform=False
+            )
+        y_values, y_index = preprocess_y(y=y)
+
+        if self.differentiation is not None:
+            if not self.fitted:
+                y_values = self.differentiator.fit_transform(y_values)
+            else:
+                differentiator = clone(self.differentiator)
+                y_values = differentiator.fit_transform(y_values)
+
+        if exog is not None:
+            
+            check_exog(exog=exog, allow_nan=True)
+            if len(exog) != len(y):
+                raise ValueError(
+                    (f"`exog` must have same number of samples as `y`. "
+                    f"length `exog`: ({len(exog)}), length `y`: ({len(y)})")
+                )
+            
+            if isinstance(exog, pd.Series):
+                exog = transform_series(
+                        series=exog,
+                        transformer=self.transformer_exog,
+                        fit=fit_transformer,
+                        inverse_transform=False
+                    )
+            else:
+                exog = transform_dataframe(
+                        df=exog,
+                        transformer=self.transformer_exog,
+                        fit=fit_transformer,
+                        inverse_transform=False
+                    )
+            
+            check_exog_dtypes(exog, call_check_exog=True)
+
+            _, exog_index = preprocess_exog(exog=exog, return_values=False)
+            if not (exog_index[:len(y_index)] == y_index).all():
+                raise ValueError(
+                    ("Different index for `y` and `exog`. They must be equal "
+                    "to ensure the correct alignment of values.")
+                )
+
+        X_train, y_train = self._create_lags(y=y_values)
+        X_train_col_names = [f"lag_{i}" for i in self.lags]
+        X_train = pd.DataFrame(
+                    data=X_train,
+                    columns=X_train_col_names,
+                    index=y_index[self.max_lag:]
+                )
+
+        if exog is not None:
+            # The first `self.max_lag` positions have to be removed from exog
+            # since they are not in X_train.
+            exog_to_train = exog.iloc[self.max_lag:, ]
+            exog_to_train.index = exog_index[self.max_lag:]
+            X_train = pd.concat((X_train, exog_to_train), axis=1)
+
+        # TODO: move self to fit method and make X_train_col_names a return
+        if not self.fitted:
+            self.X_train_col_names = X_train.columns.to_list()
+
+        y_train = pd.Series(
+                    data=y_train,
+                    index=y_index[self.max_lag:],
+                    name='y'
+                )
+
+        if self.differentiation is not None:
+            X_train = X_train.iloc[self.differentiation:]
+            y_train = y_train.iloc[self.differentiation:]
+
+        # Split the data into training and calibration sets
+        split_point = int(len(X_train) * (1 - calib_size))
+        
+        X_train_final = X_train.iloc[:split_point]
+        y_train_final = y_train.iloc[:split_point]
+        X_calib_final = X_train.iloc[split_point:]
+        y_calib_final = y_train.iloc[split_point:]
+
+        return X_train_final, y_train_final, X_calib_final, y_calib_final
+
+            
+        
 
 
     def create_sample_weights(
@@ -497,7 +622,7 @@ class ForecasterAutoreg(ForecasterBase):
         Parameters
         ----------
         X_train : pandas DataFrame
-            Dataframe created with the `create_train_X_y` method, first return.
+            Dataframe created with the `create_train_calib_X_y` method, first return.
 
         Returns
         -------
@@ -533,6 +658,7 @@ class ForecasterAutoreg(ForecasterBase):
         self,
         y: pd.Series,
         exog: Optional[Union[pd.Series, pd.DataFrame]]=None,
+        calib_size: float = None,
         store_last_window: bool=True,
         store_in_sample_residuals: bool=True
     ) -> None:
@@ -575,7 +701,19 @@ class ForecasterAutoreg(ForecasterBase):
         self.fitted              = False
         self.training_range      = None
 
-        X_train, y_train = self.create_train_X_y(y=y, exog=exog)
+        
+        if calib_size:
+            # create X and y for training and calibration
+            X_train, y_train, X_calib, y_calib = self.create_train_calib_X_y(y=y, exog=exog, calib_size=calib_size)
+            self.X_calib = X_calib
+            self.y_calib = y_calib
+        else:
+            X_train, y_train = self.create_train_X_y(y=y, exog=exog)
+            
+        self.calib_size = calib_size  # log that the calibration size was used
+            
+        
+        
         sample_weight = self.create_sample_weights(X_train=X_train)
 
         if sample_weight is not None:
@@ -688,7 +826,8 @@ class ForecasterAutoreg(ForecasterBase):
         self,
         steps: int,
         last_window: np.ndarray,
-        exog: Optional[np.ndarray]=None
+        exog: Optional[np.ndarray]=None,
+        conformalize: bool=False
     ) -> np.ndarray:
         """
         Predict n steps ahead. It is an iterative process in which, each prediction,
@@ -703,32 +842,61 @@ class ForecasterAutoreg(ForecasterBase):
             first iteration of the prediction (t + 1).
         exog : numpy ndarray, default `None`
             Exogenous variable/s included as predictor/s.
+        conformalize : bool, default `False`
+            Whether to use conformal prediction for prediction intervals.
 
         Returns
         -------
         predictions : numpy ndarray
             Predicted values.
+        prediction_intervals : numpy ndarray
+            Prediction intervals, only if conformalize is True.
         
         """
 
         predictions = np.full(shape=steps, fill_value=np.nan)
+        
+        if conformalize:
+            prediction_intervals = np.full(shape=(steps, 2), fill_value=np.nan)
+        
 
         for i in range(steps):
             X = last_window[-self.lags].reshape(1, -1)
             if exog is not None:
                 X = np.column_stack((X, exog[i, ].reshape(1, -1)))
+            
             with warnings.catch_warnings():
                 # Suppress scikit-learn warning: "X does not have valid feature names,
                 # but NoOpTransformer was fitted with feature names".
                 warnings.simplefilter("ignore")
-                prediction = self.regressor.predict(X)
-                predictions[i] = prediction.ravel()[0]
+                
+                if conformalize:
+                    prediction, prediction_interval = self.conformal_forecaster.predict(
+                        X=X, alpha=self.alpha, ensemble=True, optimize_beta=True, allow_infinite_bounds=True
+                        )
+                    predictions[i] = prediction.ravel()[0]
+                    prediction_intervals[i] = prediction_interval.ravel()
+                    
+                else:
+                    prediction = self.regressor.predict(X)
+                    predictions[i] = prediction.ravel()[0]
 
             # Update `last_window` values. The first position is discarded and 
             # the new prediction is added at the end.
             last_window = np.append(last_window[1:], prediction)
+            
+            if conformalize and i > 0:
+                # Update the conformal by fitting on last prediction and true value
+                X_step_pfit = exog[step - 1:step] if exog is not None else X
+                y_step_pfit = predictions[step - 1:step]
+                self.conformal_forecaster.partial_fit(X_step_pfit, y_step_pfit, ensemble=ensemble)
+                self.conformal_forecaster.adapt_conformal_inference(X_step_pfit, y_step_pfit, ensemble=ensemble, 
+                                                                    gamma=self.gamma, optimize_beta=optimize_beta)
 
-        return predictions
+        if conformalize:
+            return predictions, prediction_intervals
+        else:
+            return predictions
 
             
     def predict(
@@ -1055,6 +1223,153 @@ class ForecasterAutoreg(ForecasterBase):
 
         return boot_predictions
 
+    def calibrate_conformal(self):
+        """
+        Calibrate the model for conformal prediction using MAPIE.
+        
+        When initially calling forecaster.fit(y, calib_size=0.2), the model is trained on the first 80% of the data.
+        The last 20% of the data is used for calibration.
+        
+        cv : str or cross-validator, default 'prefit'
+            The cross-validation strategy for MAPIE. 'prefit' assumes the estimator is already fitted.
+            It then only has to calibrate the conformal predictor on a validation set.
+        """
+        
+        # we want the model to be fitted already for clarity
+        if not self.fitted:
+            raise ValueError("The model must be fitted before calibrating it for conformal prediction.")
+        
+        # check whether calib size was used --> model should not be calibrated on the same data as it was trained on
+        if self.calib_size is None:
+            raise ValueError(f"""The model was not trained with a calibration size. Please provide a calibration size.
+                             The model should not be calibrated on the same data as it was trained on.
+                             Please call `fit(y, calib_size=0.2)` to train the model with 80% of the data and calibrate it with the remaining 20%.""")
+        
+        self.conformal_forecaster = MapieTimeSeriesRegressor(
+            estimator=self.regressor,
+            method='aci',
+            cv="prefit",
+        )
+        self.conformal_forecaster.fit(self.X_calib, self.y_calib)
+        
+        self.calibrated = True
+        
+        return None
+    
+    def predict_conformal_interval(self, steps: int, last_window: Optional[pd.Series]=None, exog: Optional[pd.Series]=None,
+                                   desired_coverage: float = 0.9, adaptiveness: str = 'medium'):
+        """
+        Predict the conformal interval for the next steps.
+        
+        Parameters:
+        steps : int
+            Number of steps to predict.
+        last_window : pd.Series, default None
+            Last window of the time series.
+        exog : pd.Series, default None
+            Exogenous variables.
+        desired_coverage : float, default 0.9
+            Desired coverage of the conformal interval.
+        adaptiveness : str, default 'medium'
+            Adaptiveness of the conformal interval. Must be one of 'low', 'medium', or 'high'.
+        """
+        
+        if not self.fitted:
+            raise ValueError("The model must be fitted before predicting.")
+        
+        if self.calib_size is None:
+            raise ValueError(f"""The model was not trained with a calibration size. Please provide a calibration size.
+                             The model should not be calibrated on the same data as it was trained on.
+                             Please call `fit(y, calib_size=0.2)` to train the model with 80% of the data and calibrate it with the remaining 20%.""")
+        
+        if not self.calibrated:
+            raise ValueError("The model has not been calibrated. Please call `calibrate_conformal` first.")
+        
+        assert desired_coverage > 0 and desired_coverage < 1, "Desired coverage must be between 0 and 1."
+        alpha = 1 - desired_coverage
+        self.alpha = alpha
+        
+        assert adaptiveness in ['low', 'medium', 'high'], "Adaptiveness must be one of 'low', 'medium', or 'high'."
+        
+        # cases low medium high to 0.005, 0.01, 0.05
+        gammas = {
+            'low': 0.005,
+            'medium': 0.01,
+            'high': 0.05
+        }
+        
+        self.gamma = gammas[adaptiveness]
+
+        # Prepare the last_window and exog values
+        if self.differentiation is not None:
+            raise NotImplementedError("Differentiation is not yet implemented for conformal prediction.")
+        
+        if last_window is None:
+            last_window = self.last_window
+
+        check_predict_input(
+            forecaster_name  = type(self).__name__,
+            steps            = steps,
+            fitted           = self.fitted,
+            included_exog    = self.included_exog,
+            index_type       = self.index_type,
+            index_freq       = self.index_freq,
+            window_size      = self.window_size_diff,
+            last_window      = last_window,
+            last_window_exog = None,
+            exog             = exog,
+            exog_type        = self.exog_type,
+            exog_col_names   = self.exog_col_names,
+            interval         = None,
+            alpha            = None,
+            max_steps        = None,
+            levels           = None,
+            series_col_names = None
+        )
+
+        last_window = last_window.iloc[-self.window_size_diff:].copy()
+
+        if exog is not None:
+            if isinstance(exog, pd.DataFrame):
+                exog = transform_dataframe(
+                        df                = exog,
+                        transformer       = self.transformer_exog,
+                        fit               = False,
+                        inverse_transform = False
+                    )
+            else:
+                exog = transform_series(
+                        series            = exog,
+                        transformer       = self.transformer_exog,
+                        fit               = False,
+                        inverse_transform = False
+                    )
+            check_exog_dtypes(exog=exog)
+            exog_values = exog.to_numpy()[:steps]
+        else:
+            exog_values = None
+        
+        last_window = transform_series(
+                        series            = last_window,
+                        transformer       = self.transformer_y,
+                        fit               = False,
+                        inverse_transform = False
+                    )
+        last_window_values, last_window_index = preprocess_last_window(
+                                                    last_window = last_window
+                                                )
+        
+        # Create predictions
+        predictions, prediction_intervals = self._recursive_predict(
+            steps=steps,
+            last_window=last_window_values,
+            exog=exog_values,
+            conformalize=True
+        )
+            
+        return predictions, prediction_intervals
+        
+        
 
     def predict_interval(
         self,

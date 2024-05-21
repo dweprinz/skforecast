@@ -140,3 +140,11 @@ dmypy.json
 **.Rproj.user*
 **.Rproj
 **.Rhistory
+
+
+# my env
+bin
+lib64
+pyvenv.cfg
+greenlet.h
+ttx.1
