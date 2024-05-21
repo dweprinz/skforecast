@@ -148,3 +148,4 @@ lib64
 pyvenv.cfg
 greenlet.h
 ttx.1
+share/

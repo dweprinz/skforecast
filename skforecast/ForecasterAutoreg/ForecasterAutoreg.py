@@ -36,6 +36,11 @@ from ..utils import transform_series
 from ..utils import transform_dataframe
 from ..preprocessing import TimeSeriesDifferentiator
 
+# Conformal Prediction
+import mapie
+from mapie.regression import MapieTimeSeriesRegressor, MapieRegressor
+
+
 logging.basicConfig(
     format = '%(name)-10s %(levelname)-5s %(message)s', 
     level  = logging.INFO,
@@ -711,6 +716,8 @@ class ForecasterAutoreg(ForecasterBase):
             X_train, y_train = self.create_train_X_y(y=y, exog=exog)
             
         self.calib_size = calib_size  # log that the calibration size was used
+        
+        print(f"YES: WE USE CALIB_SIZE: {calib_size}")
             
         
         
@@ -872,7 +879,7 @@ class ForecasterAutoreg(ForecasterBase):
                 
                 if conformalize:
                     prediction, prediction_interval = self.conformal_forecaster.predict(
-                        X=X, alpha=self.alpha, ensemble=True, optimize_beta=True, allow_infinite_bounds=True
+                        X=X, alpha=self.alpha, ensemble=False, optimize_beta=True, allow_infinite_bounds=True
                         )
                     predictions[i] = prediction.ravel()[0]
                     prediction_intervals[i] = prediction_interval.ravel()
@@ -887,11 +894,23 @@ class ForecasterAutoreg(ForecasterBase):
             
             if conformalize and i > 0:
                 # Update the conformal by fitting on last prediction and true value
-                X_step_pfit = exog[step - 1:step] if exog is not None else X
-                y_step_pfit = predictions[step - 1:step]
-                self.conformal_forecaster.partial_fit(X_step_pfit, y_step_pfit, ensemble=ensemble)
-                self.conformal_forecaster.adapt_conformal_inference(X_step_pfit, y_step_pfit, ensemble=ensemble, 
-                                                                    gamma=self.gamma, optimize_beta=optimize_beta)
+                X_step_pfit = exog[i - 1:i] if exog is not None else X
+                y_step_pfit = predictions[i - 1:i]
+                # self.conformal_forecaster.partial_fit(X_step_pfit, y_step_pfit, ensemble=False)
+                # self.conformal_forecaster.adapt_conformal_inference(X_step_pfit, y_step_pfit,
+                #                                                    gamma=self.gamma)
+                
+                with warnings.catch_warnings():
+                    # Suppress scikit-learn warning: "X does not have valid feature names,
+                    # but NoOpTransformer was fitted with feature names".
+                    warnings.simplefilter("ignore")
+                    self.conformal_forecaster.update(
+                            X= X_step_pfit,
+                            y= y_step_pfit,
+                            ensemble= False,
+                            alpha = self.alpha,
+                            gamma=self.gamma,
+                            optimize_beta= False)
 
         if conformalize:
             return predictions, prediction_intervals
@@ -1247,9 +1266,10 @@ class ForecasterAutoreg(ForecasterBase):
         
         self.conformal_forecaster = MapieTimeSeriesRegressor(
             estimator=self.regressor,
-            method='aci',
             cv="prefit",
+            method='aci'
         )
+        
         self.conformal_forecaster.fit(self.X_calib, self.y_calib)
         
         self.calibrated = True
@@ -1287,7 +1307,9 @@ class ForecasterAutoreg(ForecasterBase):
         
         assert desired_coverage > 0 and desired_coverage < 1, "Desired coverage must be between 0 and 1."
         alpha = 1 - desired_coverage
-        self.alpha = alpha
+        
+        # ruond it to 2 decimal places
+        self.alpha = np.round(alpha, 2)
         
         assert adaptiveness in ['low', 'medium', 'high'], "Adaptiveness must be one of 'low', 'medium', or 'high'."
         
@@ -1359,7 +1381,11 @@ class ForecasterAutoreg(ForecasterBase):
                                                     last_window = last_window
                                                 )
         
+        # NOTE: MANUAL FIX FOR THE MAPIE BUG ON METHOD ACI -> BASE
+        self.conformal_forecaster.method = 'aci'
         # Create predictions
+    
+        warnings.simplefilter("ignore")
         predictions, prediction_intervals = self._recursive_predict(
             steps=steps,
             last_window=last_window_values,
