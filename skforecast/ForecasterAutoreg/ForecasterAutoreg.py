@@ -612,9 +612,6 @@ class ForecasterAutoreg(ForecasterBase):
 
         return X_train_final, y_train_final, X_calib_final, y_calib_final
 
-            
-        
-
 
     def create_sample_weights(
         self,
@@ -896,9 +893,6 @@ class ForecasterAutoreg(ForecasterBase):
                 # Update the conformal by fitting on last prediction and true value
                 X_step_pfit = exog[i - 1:i] if exog is not None else X
                 y_step_pfit = predictions[i - 1:i]
-                # self.conformal_forecaster.partial_fit(X_step_pfit, y_step_pfit, ensemble=False)
-                # self.conformal_forecaster.adapt_conformal_inference(X_step_pfit, y_step_pfit,
-                #                                                    gamma=self.gamma)
                 
                 with warnings.catch_warnings():
                     # Suppress scikit-learn warning: "X does not have valid feature names,
@@ -1274,6 +1268,8 @@ class ForecasterAutoreg(ForecasterBase):
         
         self.calibrated = True
         
+        print(f"\nConformal prediction has been calibrated. The model is now ready to predict conformal intervals.\n")
+        
         return None
     
     def predict_conformal_interval(self, steps: int, last_window: Optional[pd.Series]=None, exog: Optional[pd.Series]=None,
@@ -1384,8 +1380,7 @@ class ForecasterAutoreg(ForecasterBase):
         # NOTE: MANUAL FIX FOR THE MAPIE BUG ON METHOD ACI -> BASE
         self.conformal_forecaster.method = 'aci'
         # Create predictions
-    
-        warnings.simplefilter("ignore")
+
         predictions, prediction_intervals = self._recursive_predict(
             steps=steps,
             last_window=last_window_values,
