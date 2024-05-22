@@ -890,7 +890,7 @@ class ForecasterAutoreg(ForecasterBase):
             last_window = np.append(last_window[1:], prediction)
             
             if conformalize and i > 0:
-                # Update the conformal by fitting on last prediction and true value
+                # Update the conformity scores by updating on last prediction and true value
                 X_step_pfit = exog[i - 1:i] if exog is not None else X
                 y_step_pfit = predictions[i - 1:i]
                 
