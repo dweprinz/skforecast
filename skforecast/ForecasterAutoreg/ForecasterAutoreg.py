@@ -1317,11 +1317,10 @@ class ForecasterAutoreg(ForecasterBase):
         predictions, prediction_intervals = self._recursive_predict_conformal(
             steps=steps,
             last_window=last_window_values,
-            exog=exog_values,
-            conformalize=True
+            exog=exog_values
         )
         
-        predictions = np.concat((predictions, predictions_interval), axis=1)
+        predictions = np.concatenate((predictions.reshape(-1, 1), prediction_intervals), axis=1)
         
         predictions = pd.DataFrame(
                                data    = predictions,
