@@ -27,9 +27,8 @@ from ..utils import check_exog
 from ..utils import get_exog_dtypes
 from ..utils import check_exog_dtypes
 from ..utils import check_predict_input
-# TODO: ADD calibrate input check
-# TODO: Add check conformal interval
 from ..utils import check_interval
+from ..utils import check_conformal_calibrate_input
 from ..utils import preprocess_y
 from ..utils import preprocess_last_window
 from ..utils import preprocess_exog
@@ -691,7 +690,51 @@ class ForecasterAutoreg(ForecasterBase):
             for i in range(len(self.binner.bin_edges_[0]) - 1)
         }
 
-    # TODO  add the original recursive predict again
+    def _recursive_predict(
+        self,
+        steps: int,
+        last_window: np.ndarray,
+        exog: Optional[np.ndarray]=None
+    ) -> np.ndarray:
+        """
+        Predict n steps ahead. It is an iterative process in which, each prediction,
+        is used as a predictor for the next step.
+        
+        Parameters
+        ----------
+        steps : int
+            Number of future steps predicted.
+        last_window : numpy ndarray
+            Series values used to create the predictors (lags) needed in the 
+            first iteration of the prediction (t + 1).
+        exog : numpy ndarray, default `None`
+            Exogenous variable/s included as predictor/s.
+
+        Returns
+        -------
+        predictions : numpy ndarray
+            Predicted values.
+        
+        """
+
+        predictions = np.full(shape=steps, fill_value=np.nan)
+
+        for i in range(steps):
+            X = last_window[-self.lags].reshape(1, -1)
+            if exog is not None:
+                X = np.column_stack((X, exog[i, ].reshape(1, -1)))
+            with warnings.catch_warnings():
+                # Suppress scikit-learn warning: "X does not have valid feature names,
+                # but NoOpTransformer was fitted with feature names".
+                warnings.simplefilter("ignore")
+                prediction = self.regressor.predict(X)
+                predictions[i] = prediction.ravel()[0]
+
+            # Update `last_window` values. The first position is discarded and 
+            # the new prediction is added at the end.
+            last_window = np.append(last_window[1:], prediction)
+
+        return predictions
 
     def _recursive_predict_conformal(
         self,
@@ -1095,7 +1138,7 @@ class ForecasterAutoreg(ForecasterBase):
     def calibrate_conformal(self, 
                             y, 
                             exog=None,
-                            conformal_kwargs: Optional[dict]=None,):
+                            conformal_kwargs: Optional[dict]=None):
         """
         Calibrate the model for conformal prediction using MAPIE.
         
@@ -1109,23 +1152,60 @@ class ForecasterAutoreg(ForecasterBase):
         # we want the model to be fitted already for clarity
         if not self.fitted:
             raise NotFittedError("The model must be fitted before calibrating it for conformal prediction.")
-
         
         # TODO: 
-        # - Check whether y is series with same name, index, frequency
-        # - Check whether exog is series or dataframe with same name, index, frequency
+        # Check whether y is series with same name, frequency same as training data
+        if y is not None:
+            if not isinstance(y, pd.Series):
+                raise ValueError("y must be a pandas Series.")
+            
+            if y.name != self.y_name:
+                raise ValueError(f"y must have the same name as the training data: {self.y_name}")
+            
+            if y.index.freq != self.index_freq:
+                raise ValueError(f"y must have the same frequency as the training data: {self.index_freq}")
+            
+            
+        
+            
+        # - Check whether exog is series or dataframe with same name, frequency
+        
+        if exog is not None:
+            if not isinstance(exog, pd.Series) and not isinstance(exog, pd.DataFrame):
+                raise ValueError("exog must be a pandas Series or DataFrame.")
+            
+            if isinstance(exog, pd.Series):
+                if exog.name != self.exog_col_names:
+                    raise ValueError(f"exog must have the same name as the training data: {self.exog_col_names}")
+                
+                if exog.index.freq != self.index_freq:
+                    raise ValueError(f"exog must have the same frequency as the training data: {self.index_freq}")
+            
+            if isinstance(exog, pd.DataFrame):
+                if exog.columns.to_list() != self.exog_col_names:
+                    raise ValueError(f"exog must have the same columns as the training data: {self.exog_col_names}")
+                
+                if exog.index.freq != self.index_freq:
+                    raise ValueError(f"exog must have the same frequency as the training data: {self.index_freq}")
+                
         # - Conformal: calibration timesteps are not included in the training set (calibrate on 2022 and training is from 2021 to 2023)
         #           - This should be a warning as it is theoretically incorrect, but might be interesting for some practical experimental use
+        
+        # check for any time steps in calibration set that are in the training set
+        # if there are any, raise a warning
+        
+        if y.index.intersection(self.training_range).any():
+            warnings.warn("Some time steps in the calibration set are also in the training set. \
+                For theoretical correctness, the calibration set should not overlap with the training set.")
 
-        # TODO: create option for providing kwargs and then overwrite the fixed options
+    
         self.conformal_kwargs = conformal_kwargs
         if conformal_kwargs is None:
             self.conformal_kwargs = {}
         else:
             self.conformal_kwargs = conformal_kwargs
-            # self.binner_kwargs['encode'] = 'ordinal'
-            # self.binner_kwargs['dtype'] = np.float64
-        # self.binner = KBinsDiscretizer(**self.binner_kwargs)
+            self.conformal_kwargs['cv'] = 'prefit'
+            self.conformal_kwargs['method'] = 'aci'
         
         
         X_calib, y_calib = self.create_train_X_y(y, exog)
@@ -1133,8 +1213,7 @@ class ForecasterAutoreg(ForecasterBase):
         # ACI 
         self.regressor_conformal = MapieTimeSeriesRegressor(
             estimator=self.regressor,
-            cv="prefit",
-            method='aci', 
+            **self.conformal_kwargs
         )
         
         self.regressor_conformal.fit(X_calib, y_calib)
@@ -1169,9 +1248,11 @@ class ForecasterAutoreg(ForecasterBase):
         if not self.calibrated:
             raise ValueError("The model has not been calibrated. Please call `calibrate_conformal` first.")
         
-        # TODO change assert to raise Error (valueerror)
-        assert desired_coverage > 0 and desired_coverage < 1, "Desired coverage must be between 0 and 1."
-        assert gamma > 0 and gamma < 1, "Gamma must be between 0 and 1."
+        if not (desired_coverage > 0 and desired_coverage < 1):
+            raise ValueError("Desired coverage must be between 0 and 1.")
+        
+        if gamma < 0 or gamma > 1:
+            raise ValueError("Gamma must be between 0 and 1.")
 
         alpha = 1 - desired_coverage
         
