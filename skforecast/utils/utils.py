@@ -1017,7 +1017,7 @@ def check_predict_input(
 
     return
 
-def check_conformal_calibrate_input(y: Union[pd.Series, pd.DataFrame], y_hat: np.ndarray, interval: list) -> None:
+def check_conformal_input(y: Union[pd.Series, pd.DataFrame], y_hat: np.ndarray, interval: list) -> None:
     pass
 
 def preprocess_y(

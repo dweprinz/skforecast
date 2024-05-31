@@ -28,7 +28,7 @@ from ..utils import get_exog_dtypes
 from ..utils import check_exog_dtypes
 from ..utils import check_predict_input
 from ..utils import check_interval
-from ..utils import check_conformal_calibrate_input
+from ..utils import check_conformal_input
 from ..utils import preprocess_y
 from ..utils import preprocess_last_window
 from ..utils import preprocess_exog
