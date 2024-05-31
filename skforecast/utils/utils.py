@@ -1017,8 +1017,31 @@ def check_predict_input(
 
     return
 
-def check_conformal_input(y: Union[pd.Series, pd.DataFrame], y_hat: np.ndarray, interval: list) -> None:
-    pass
+def check_conformal_input(y_train_range, y_train_freq, y_cal) -> None:
+    # ensure y_train_range is a DatetimeIndex
+    if not isinstance(y_train_range, pd.DatetimeIndex):
+        y_train_range = pd.date_range(start=y_train_range[0], end=y_train_range[-1], freq=y_train_freq)
+
+    # ensure y_cal's index is a DatetimeIndex
+    if not isinstance(y_cal.index, pd.DatetimeIndex):
+        raise ValueError("y_cal must have a DatetimeIndex as its index.")
+    
+    train_indices = y_train_range
+    cal_indices = y_cal.index
+    
+    # check for intersection
+    if not train_indices.intersection(cal_indices).empty:
+        raise ValueError(
+            "The calibration set cannot have any common index with the training set. "
+            "Please, make sure that the calibration set is disjoint from the training set."
+        )
+    
+        
+    
+        
+    
+    
+
 
 def preprocess_y(
     y: Union[pd.Series, pd.DataFrame],

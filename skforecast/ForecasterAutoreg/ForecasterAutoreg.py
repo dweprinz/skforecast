@@ -1153,17 +1153,9 @@ class ForecasterAutoreg(ForecasterBase):
         if not self.fitted:
             raise NotFittedError("The model must be fitted before calibrating it for conformal prediction.")
         
-        # TODO: 
-        # Check whether y is series with same name, frequency same as training data
-        if y is not None:
-            if not isinstance(y, pd.Series):
-                raise ValueError("y must be a pandas Series.")
-            
-            if y.name != self.y_name:
-                raise ValueError(f"y must have the same name as the training data: {self.y_name}")
-            
-            if y.index.freq != self.index_freq:
-                raise ValueError(f"y must have the same frequency as the training data: {self.index_freq}")
+        check_conformal_input(y_train_range=self.training_range, 
+                              y_train_freq=self.index_freq,
+                              y_cal=y)
             
             
         
@@ -1193,10 +1185,7 @@ class ForecasterAutoreg(ForecasterBase):
         
         # check for any time steps in calibration set that are in the training set
         # if there are any, raise a warning
-        
-        if y.index.intersection(self.training_range).any():
-            warnings.warn("Some time steps in the calibration set are also in the training set. \
-                For theoretical correctness, the calibration set should not overlap with the training set.")
+    
 
     
         self.conformal_kwargs = conformal_kwargs
@@ -1332,7 +1321,6 @@ class ForecasterAutoreg(ForecasterBase):
             conformalize=True
         )
         
-        # TODO make sure numpy to pandas and concatenation happens correctly
         predictions = np.concat((predictions, predictions_interval), axis=1)
         
         predictions = pd.DataFrame(
