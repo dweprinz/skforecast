@@ -721,6 +721,7 @@ class ForecasterAutoreg(ForecasterBase):
 
         for i in range(steps):
             X = last_window[-self.lags].reshape(1, -1)
+            print(X)
             if exog is not None:
                 X = np.column_stack((X, exog[i, ].reshape(1, -1)))
             with warnings.catch_warnings():
@@ -728,6 +729,7 @@ class ForecasterAutoreg(ForecasterBase):
                 # but NoOpTransformer was fitted with feature names".
                 warnings.simplefilter("ignore")
                 prediction = self.regressor.predict(X)
+                print(prediction)
                 predictions[i] = prediction.ravel()[0]
 
             # Update `last_window` values. The first position is discarded and 
@@ -772,7 +774,9 @@ class ForecasterAutoreg(ForecasterBase):
         prediction_intervals = np.full(shape=(steps, 2), fill_value=np.nan)
 
         for i in range(steps):
-            X = last_window[-self.lags].reshape(1, -1)
+            
+            X = last_window[-self.lags].reshape(1, -1)  # bug not here
+            print(X)
             if exog is not None:
                 X = np.column_stack((X, exog[i, ].reshape(1, -1)))
             
@@ -784,6 +788,8 @@ class ForecasterAutoreg(ForecasterBase):
                 prediction, prediction_interval = self.regressor_conformal.predict(
                     X=X, alpha=self.alpha, ensemble=False, optimize_beta=True, allow_infinite_bounds=True
                     )
+                
+                print(prediction)
                 predictions[i] = prediction.ravel()[0]
                 prediction_intervals[i] = prediction_interval.ravel()
 
@@ -1190,7 +1196,7 @@ class ForecasterAutoreg(ForecasterBase):
     
         self.conformal_kwargs = conformal_kwargs
         if conformal_kwargs is None:
-            self.conformal_kwargs = {}
+            self.conformal_kwargs = {'cv' : 'prefit', 'method' : 'aci'}
         else:
             self.conformal_kwargs = conformal_kwargs
             self.conformal_kwargs['cv'] = 'prefit'
