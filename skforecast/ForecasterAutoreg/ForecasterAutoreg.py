@@ -721,7 +721,6 @@ class ForecasterAutoreg(ForecasterBase):
 
         for i in range(steps):
             X = last_window[-self.lags].reshape(1, -1)
-            print(X)
             if exog is not None:
                 X = np.column_stack((X, exog[i, ].reshape(1, -1)))
             with warnings.catch_warnings():
@@ -729,7 +728,6 @@ class ForecasterAutoreg(ForecasterBase):
                 # but NoOpTransformer was fitted with feature names".
                 warnings.simplefilter("ignore")
                 prediction = self.regressor.predict(X)
-                print(prediction)
                 predictions[i] = prediction.ravel()[0]
 
             # Update `last_window` values. The first position is discarded and 
@@ -776,7 +774,6 @@ class ForecasterAutoreg(ForecasterBase):
         for i in range(steps):
             
             X = last_window[-self.lags].reshape(1, -1)  # bug not here
-            print(X)
             if exog is not None:
                 X = np.column_stack((X, exog[i, ].reshape(1, -1)))
             
@@ -789,7 +786,6 @@ class ForecasterAutoreg(ForecasterBase):
                     X=X, alpha=self.alpha, ensemble=False, optimize_beta=True, allow_infinite_bounds=True
                     )
                 
-                print(prediction)
                 predictions[i] = prediction.ravel()[0]
                 prediction_intervals[i] = prediction_interval.ravel()
 
@@ -809,10 +805,7 @@ class ForecasterAutoreg(ForecasterBase):
                     self.regressor_conformal.update(
                             X= X_step_pfit,
                             y= y_step_pfit,
-                            ensemble= False,
-                            alpha = self.alpha,
-                            gamma=self.gamma,
-                            optimize_beta= False)
+                            gamma=self.gamma)
 
         return predictions, prediction_intervals
 
@@ -1215,12 +1208,17 @@ class ForecasterAutoreg(ForecasterBase):
         
         self.calibrated = True
         
+        if self.last_window is not None:
+            # the last window is now the last window of the calibration data
+            self.last_window = y_calib.iloc[-self.window_size_diff:].copy()
+            print(f"\nLast window of the calibration data has been stored in the model.\n")
+        
         print(f"\nConformal prediction has been calibrated. The model is now ready to predict conformal intervals.\n")
         
         return None
     
     def predict_conformal_interval(self, steps: int, last_window: Optional[pd.Series]=None, exog: Optional[pd.Series]=None,
-                                   desired_coverage: float = 0.9, gamma: float = 0.005):
+                                   desired_coverage: float = 0.9, gamma: float = 0.05):
         """
         Predict the conformal interval for the next steps.
         
@@ -1261,8 +1259,15 @@ class ForecasterAutoreg(ForecasterBase):
         if self.differentiation is not None:
             raise NotImplementedError("Differentiation is not yet supported for conformal prediction.")
         
+        # last window is by default the last window of the calibration data
         if last_window is None:
+            # last window of training data is self.last_window
+            # when calibrated this changes to the last window of the calibration data
             last_window = self.last_window
+        else:
+            # if last window is provided, make sure that it is not in or before the training data
+            if last_window.index[0] <= self.training_range[1]:
+                raise ValueError("The last window must be after the training data.")
 
         check_predict_input(
             forecaster_name  = type(self).__name__,
